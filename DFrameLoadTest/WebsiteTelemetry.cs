@@ -15,10 +15,8 @@ public static class WebsiteTelemetry
 
     private static readonly Meter Meter = new(MeterName);
     private static readonly Counter<long> Requests = Meter.CreateCounter<long>("website.requests", "{request}");
-    private static readonly Counter<long> Rejections = Meter.CreateCounter<long>("website.rejected", "{call}");
     private static readonly Histogram<double> Duration = Meter.CreateHistogram<double>("website.http.duration", "s");
     private static readonly Histogram<double> Headers = Meter.CreateHistogram<double>("website.headers.duration", "s");
-    private static readonly Histogram<double> Wait = Meter.CreateHistogram<double>("website.wait.duration", "s");
     private static readonly Histogram<long> Bytes = Meter.CreateHistogram<long>("website.response.size", "By");
 
     public static IServiceCollection AddWebsiteTelemetry(this IServiceCollection services)
@@ -31,10 +29,6 @@ public static class WebsiteTelemetry
             {
                 metrics
                 .AddMeter(MeterName, HarnessTelemetry.MeterName, "System.Runtime", "System.Net.Http", "System.Net.NameResolution")
-                .AddView("harness.wait.duration", new ExplicitBucketHistogramConfiguration
-                {
-                    Boundaries = [0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
-                })
                 .AddView("website.http.duration", new ExplicitBucketHistogramConfiguration
                 {
                     Boundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30]
@@ -42,10 +36,6 @@ public static class WebsiteTelemetry
                 .AddView("website.headers.duration", new ExplicitBucketHistogramConfiguration
                 {
                     Boundaries = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30]
-                })
-                .AddView("website.wait.duration", new ExplicitBucketHistogramConfiguration
-                {
-                    Boundaries = [0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 20, 30, 60]
                 })
                 .AddOtlpExporter();
                 if (Environment.GetEnvironmentVariable("PROMETHEUS_OTLP_ENDPOINT") is { Length: > 0 } endpoint)
@@ -56,6 +46,7 @@ public static class WebsiteTelemetry
                         options.Protocol = OtlpExportProtocol.Grpc;
                     });
                 }
+
             });
         return services;
     }
@@ -85,19 +76,12 @@ public static class WebsiteTelemetry
         };
         Requests.Add(1, tags);
         Duration.Record(request.HttpMilliseconds / 1000, tags);
-        Wait.Record(request.WaitMilliseconds / 1000, tags);
         Bytes.Record(request.ResponseBytes, tags);
         if (request.HeadersMilliseconds is { } headers)
         {
             Headers.Record(headers / 1000, tags);
         }
     }
-
-    public static void RecordRejection(string? reportGroup) =>
-        Rejections.Add(1, new TagList
-        {
-            { "test.run", RunId }, { "test.group", Group(reportGroup) }, { "reason", "request_cap" }
-        });
 
     private static string Group(string? reportGroup) =>
         string.IsNullOrWhiteSpace(reportGroup) ? "default" : reportGroup;
@@ -108,3 +92,12 @@ public static class WebsiteTelemetry
             serviceInstanceId: Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture))
         .AddEnvironmentVariableDetector();
 }
+
+public sealed record WebsiteRequestResult(
+    string Step,
+    string Path,
+    int? StatusCode,
+    double? HeadersMilliseconds,
+    double HttpMilliseconds,
+    int ResponseBytes,
+    string Outcome);

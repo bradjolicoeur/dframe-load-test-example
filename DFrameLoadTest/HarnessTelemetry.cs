@@ -8,16 +8,11 @@ public static class HarnessTelemetry
     private static readonly Meter Meter = new(MeterName);
     private static readonly long Started = Stopwatch.GetTimestamp();
     private static long _workloads;
-    private static long _queued;
-    private static long _pacing;
     private static long _inFlight;
-    private static readonly Histogram<double> Delay = Meter.CreateHistogram<double>("harness.wait.duration", "s");
 
     static HarnessTelemetry()
     {
         Meter.CreateObservableGauge("harness.workloads.active", () => Volatile.Read(ref _workloads), "{workload}");
-        Meter.CreateObservableGauge("harness.requests.queued", () => Volatile.Read(ref _queued), "{request}");
-        Meter.CreateObservableGauge("harness.requests.pacing", () => Volatile.Read(ref _pacing), "{request}");
         Meter.CreateObservableGauge("harness.requests.in_flight", () => Volatile.Read(ref _inFlight), "{request}");
         Meter.CreateObservableGauge("harness.process.cpu.capacity", () => Environment.ProcessorCount, "{cpu}");
         Meter.CreateObservableGauge("harness.process.uptime", () => Stopwatch.GetElapsedTime(Started).TotalSeconds, "s");
@@ -31,26 +26,11 @@ public static class HarnessTelemetry
         return new Lease(() => Interlocked.Decrement(ref _workloads));
     }
 
-    public static IDisposable EnterQueue()
-    {
-        Interlocked.Increment(ref _queued);
-        return new Lease(() => Interlocked.Decrement(ref _queued));
-    }
-
-    public static IDisposable EnterPacing()
-    {
-        Interlocked.Increment(ref _pacing);
-        return new Lease(() => Interlocked.Decrement(ref _pacing));
-    }
-
     public static IDisposable EnterHttp()
     {
         Interlocked.Increment(ref _inFlight);
         return new Lease(() => Interlocked.Decrement(ref _inFlight));
     }
-
-    public static void RecordWait(string phase, long started) =>
-        Delay.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, new KeyValuePair<string, object?>("phase", phase));
 
     private sealed class Lease(Action release) : IDisposable
     {

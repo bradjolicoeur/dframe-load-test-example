@@ -56,8 +56,7 @@ public sealed class WebsiteTelemetryTests
             try
             {
                 WebsiteTelemetry.Record(new WebsiteRequestResult(
-                    1, "Homepage", "/", DateTimeOffset.UtcNow, 200, 20, 100, 1000, 42,
-                    "Succeeded", null), "otlp-test");
+                    "Homepage", "/", 200, 20, 100, 42, "Succeeded"), "otlp-test");
                 Assert.True(host.Services.GetRequiredService<MeterProvider>().ForceFlush());
                 var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 var text = System.Text.Encoding.UTF8.GetString(payload);
@@ -81,21 +80,19 @@ public sealed class WebsiteTelemetryTests
     }
 
     [Fact]
-    public void Metrics_merge_requests_without_workload_or_batch_id_labels_and_separate_rejections()
+    public void Metrics_merge_requests_without_workload_or_batch_id_labels()
     {
         var exported = new List<Metric>();
         using var provider = Sdk.CreateMeterProviderBuilder()
             .AddMeter(WebsiteTelemetry.MeterName)
             .AddInMemoryExporter(exported).Build();
-        var request = new WebsiteRequestResult(
-            1, "Homepage", "/", DateTimeOffset.UtcNow, 200, 20, 100, 1000, 42, "Succeeded", null);
-        WebsiteTelemetry.Record(request with { WorkloadId = "one", ExecutionId = "batch-one" }, "repeat");
-        WebsiteTelemetry.Record(request with { WorkloadId = "two", ExecutionId = "batch-two" }, "repeat");
+        var request = new WebsiteRequestResult("Homepage", "/", 200, 20, 100, 42, "Succeeded");
+        WebsiteTelemetry.Record(request, "repeat");
+        WebsiteTelemetry.Record(request, "repeat");
         WebsiteTelemetry.Record(request with
         {
-            StatusCode = null, HeadersMilliseconds = null, Outcome = "Failed", Error = "Network error"
+            StatusCode = null, HeadersMilliseconds = null, Outcome = "Failed"
         }, "repeat");
-        WebsiteTelemetry.RecordRejection("repeat");
         Assert.True(provider.ForceFlush());
 
         var counts = exported.Single(metric => metric.Name == "website.requests");
@@ -122,23 +119,14 @@ public sealed class WebsiteTelemetryTests
         Assert.Equal(1, failedCount);
         AssertHistogram(exported, "website.http.duration", 3, 0.3);
         AssertHistogram(exported, "website.headers.duration", 2, 0.04);
-        AssertHistogram(exported, "website.wait.duration", 3, 3);
         AssertHistogram(exported, "website.response.size", 3, 126);
-        var rejectionCount = 0L;
-        foreach (ref readonly var point in exported.Single(metric => metric.Name == "website.rejected").GetMetricPoints())
-        {
-            rejectionCount += point.GetSumLong();
-            Assert.Equal("request_cap", ReadTags(point)["reason"]);
-        }
-        Assert.Equal(1, rejectionCount);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Workload_emits_correlated_traces_and_metrics_without_static_reports(bool success)
+    public async Task Workload_emits_correlated_traces_and_metrics(bool success)
     {
-        var directory = Path.Combine(Path.GetTempPath(), $"dframe-no-reports-{Guid.NewGuid():N}");
         var activities = new List<Activity>();
         using var listener = new ActivityListener
         {
@@ -151,8 +139,7 @@ public sealed class WebsiteTelemetryTests
         using var provider = Sdk.CreateMeterProviderBuilder().AddMeter(WebsiteTelemetry.MeterName)
             .AddInMemoryExporter(metrics).Build();
         using var client = new HttpClient(new StubHandler(success));
-        var workload = new WebsiteBrowseWorkload(client, NullLogger<WebsiteBrowseWorkload>.Instance,
-            new WebsiteReportWriter(directory, enabled: false), "repeat");
+        var workload = new WebsiteBrowseWorkload(client, NullLogger<WebsiteBrowseWorkload>.Instance, "repeat");
         var context = new WorkloadContext(default, ExecutionId.New(), 1, 0, 1, 1, default);
         await workload.SetupAsync(context);
         try
@@ -161,13 +148,12 @@ public sealed class WebsiteTelemetryTests
             {
                 await workload.ExecuteAsync(context);
             }
+
             else
             {
                 await Assert.ThrowsAsync<HttpRequestException>(() => workload.ExecuteAsync(context));
             }
             var details = workload.Complete(context)!;
-            Assert.False(Directory.Exists(directory));
-            Assert.DoesNotContain("Report (this workload)", details.Keys);
             Assert.Equal(WebsiteTelemetry.RunId, details["OpenTelemetry run ID"]);
             var activity = Assert.Single(activities);
             Assert.Equal("GET /", activity.DisplayName);
@@ -177,6 +163,27 @@ public sealed class WebsiteTelemetryTests
             Assert.Equal(success ? ActivityStatusCode.Unset : ActivityStatusCode.Error, activity.Status);
             Assert.True(provider.ForceFlush());
             AssertHistogram(metrics, "website.http.duration", 1, null);
+        }
+        finally
+        {
+            await workload.TeardownAsync(context);
+        }
+    }
+
+    [Fact]
+    public async Task Workload_runs_past_old_cap_and_shows_total()
+    {
+        using var client = new HttpClient(new StubHandler(true));
+        var workload = new WebsiteBrowseWorkload(client, NullLogger<WebsiteBrowseWorkload>.Instance);
+        var context = new WorkloadContext(default, ExecutionId.New(), 1, 0, 1, 100, default);
+        await workload.SetupAsync(context);
+        try
+        {
+            for (var index = 0; index < 100; index++)
+            {
+                await workload.ExecuteAsync(context);
+            }
+            Assert.Equal("100", workload.Complete(context)!["HTTP requests sent"]);
         }
         finally
         {
@@ -216,7 +223,8 @@ public sealed class WebsiteTelemetryTests
             HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(
             new HttpResponseMessage(success ? HttpStatusCode.OK : HttpStatusCode.ServiceUnavailable)
             {
-                Content = new StringContent("Principal Architect", System.Text.Encoding.UTF8, "text/html")
+                Content = new StringContent("Principal Architect; Work With Me; Blog; Bradley Jolicoeur",
+                    System.Text.Encoding.UTF8, "text/html")
             });
     }
 }
