@@ -1,0 +1,158 @@
+{
+  "uid": "dframe-website",
+  "title": "DFrame website",
+  "schemaVersion": 39,
+  "version": 3,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "run", "label": "Run", "type": "query", "datasource": { "uid": "prometheus", "type": "prometheus" },
+        "query": "label_values(harness_process_uptime_seconds, test_run)", "refresh": 1,
+        "includeAll": true, "allValue": ".*", "multi": true
+      },
+      {
+        "name": "group", "label": "Repeat group", "type": "query", "datasource": { "uid": "prometheus", "type": "prometheus" },
+        "query": "label_values(website_requests_total{test_run=~\"$run\"}, test_group)", "refresh": 1,
+        "includeAll": true, "allValue": ".*", "multi": true
+      },
+      {
+        "name": "page", "label": "Page", "type": "query", "datasource": { "uid": "prometheus", "type": "prometheus" },
+        "query": "label_values(website_requests_total, page)", "refresh": 1,
+        "includeAll": true, "allValue": ".*", "multi": true
+      },
+      {
+        "name": "process", "label": "Harness process", "type": "query", "datasource": { "uid": "prometheus", "type": "prometheus" },
+        "query": "label_values(harness_process_uptime_seconds{test_run=~\"$run\"}, service_instance_id)", "refresh": 1,
+        "includeAll": true, "allValue": ".*", "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Requests since process start (selected runs/groups)",
+      "description": "Cumulative instrument totals, not a time-range count. Sum across workers and outcomes.",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(website_requests_total{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"})", "instant": true }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Failed / canceled HTTP requests",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(website_requests_total{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\",outcome!=\"Succeeded\"})", "instant": true }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "HTTP request rate by page",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (page) (rate(website_requests_total{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"}[$__rate_interval]))", "legendFormat": "{{page}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Average HTTP latency by page",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (page) (rate(website_http_duration_seconds_sum{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"}[$__rate_interval])) / sum by (page) (rate(website_http_duration_seconds_count{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"}[$__rate_interval]))", "legendFormat": "{{page}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "HTTP p95 by page (bucket estimate)",
+      "description": "Merge histogram buckets before estimating percentiles; do not average worker p95 values.",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, page) (rate(website_http_duration_seconds_bucket{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"}[$__rate_interval])))", "legendFormat": "{{page}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 8, "type": "table", "title": "Cumulative outcomes / status by page",
+      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 7 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (page, outcome, http_response_status_code) (website_requests_total{test_run=~\"$run\",test_group=~\"$group\",page=~\"$page\"})", "instant": true, "format": "table" }]
+    },
+    {
+      "id": 9, "type": "row", "title": "Harness health (selected runs/processes; ignores page/group filters)",
+      "gridPos": { "x": 0, "y": 27, "w": 24, "h": 1 }, "collapsed": false
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Connected workers / active workloads / running execution",
+      "description": "Connected workers are live controller connections, not the configured worker limit. Active workloads run from successful setup through teardown. All five virtual workers share one process.",
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "harness_workers_connected{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} connected workers" },
+        { "refId": "B", "expr": "harness_workloads_active{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} active workloads" },
+        { "refId": "C", "expr": "harness_execution_running{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} running (0/1)" }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Harness in-flight HTTP requests",
+      "description": "Requests active in HttpClient, including any connection-pool wait. Gauges sampled every five seconds can miss brief activity.",
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [
+        { "refId": "C", "expr": "harness_requests_in_flight{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} HTTP in flight" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Harness CPU (% of available logical processors)",
+      "description": "User plus system CPU time divided by Environment.ProcessorCount. Includes the controller, virtual workers, logging and telemetry in this process; not whole-machine CPU.",
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "100 * sum by (service_instance_id) (rate(dotnet_process_cpu_time_seconds_total{test_run=~\"$run\",service_instance_id=~\"$process\"}[$__rate_interval])) / sum by (service_instance_id) (harness_process_cpu_capacity{test_run=~\"$run\",service_instance_id=~\"$process\"})", "legendFormat": "{{service_instance_id}}" }],
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] }
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Harness resident memory / managed heap",
+      "description": "Working set includes native memory. Managed heap size is observed at the last GC, not a live allocation count.",
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "dotnet_process_memory_working_set_bytes{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} working set" },
+        { "refId": "B", "expr": "sum by (service_instance_id) (dotnet_gc_last_collection_heap_size_bytes{test_run=~\"$run\",service_instance_id=~\"$process\"})", "legendFormat": "{{service_instance_id}} managed heap" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 14, "type": "timeseries", "title": ".NET thread-pool threads / queued work",
+      "description": "A sustained growing queue with rising thread count can indicate starvation or blocking in the harness.",
+      "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "dotnet_thread_pool_thread_count{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} threads" },
+        { "refId": "B", "expr": "dotnet_thread_pool_queue_length{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}} queued work" }
+      ]
+    },
+    {
+      "id": 15, "type": "timeseries", "title": "HTTP client connection-pool queue duration",
+      "description": "Average time waiting for a connection, across HTTP client requests to the website. Includes only connection-pool wait, not server response time.",
+      "gridPos": { "x": 12, "y": 44, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (service_instance_id) (rate(http_client_request_time_in_queue_seconds_sum{test_run=~\"$run\",service_instance_id=~\"$process\",server_address=\"bradjolicoeur.com\"}[$__rate_interval])) / sum by (service_instance_id) (rate(http_client_request_time_in_queue_seconds_count{test_run=~\"$run\",service_instance_id=~\"$process\",server_address=\"bradjolicoeur.com\"}[$__rate_interval]))", "legendFormat": "{{service_instance_id}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "Time paused in GC (%)",
+      "gridPos": { "x": 0, "y": 52, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "100 * rate(dotnet_gc_pause_time_seconds_total{test_run=~\"$run\",service_instance_id=~\"$process\"}[$__rate_interval])", "legendFormat": "{{service_instance_id}}" }],
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] }
+    },
+    {
+      "id": 17, "type": "timeseries", "title": "Managed allocation rate",
+      "gridPos": { "x": 12, "y": 52, "w": 12, "h": 8 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "rate(dotnet_gc_heap_allocated_bytes_total{test_run=~\"$run\",service_instance_id=~\"$process\"}[$__rate_interval])", "legendFormat": "{{service_instance_id}}" }],
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] }
+    },
+    {
+      "id": 18, "type": "timeseries", "title": "Harness telemetry uptime",
+      "description": "Seconds since telemetry initialized. An advancing value shows fresh observations. A flat value may be retained by the Collector after the process exits; check Aspire resource status.",
+      "gridPos": { "x": 0, "y": 60, "w": 24, "h": 6 },
+      "datasource": { "uid": "prometheus", "type": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "harness_process_uptime_seconds{test_run=~\"$run\",service_instance_id=~\"$process\"}", "legendFormat": "{{service_instance_id}}" }],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    }
+  ]
+}
